@@ -1,0 +1,4 @@
+/mandala
+__pycache__/
+*.o
+*.py[cod]
