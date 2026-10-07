@@ -76,16 +76,28 @@ ASCII ramp + radius/phase color -> one buffered terminal write
 The program constructs the E8 root system at startup as the disjoint union
 
 $$
-\Phi_{E_8} =
-\left\{(\pm1,\pm1,0,\ldots,0)\right\}
-\;\cup\;
-\left\{\frac12(\pm1,\ldots,\pm1)\;\middle|\;
-\text{an even number of minus signs}\right\}.
+\Phi_{E_8} = \Phi_{\mathrm{int}} \cup \Phi_{\mathrm{half}} .
 $$
 
-The first family contains
-$\binom{8}{2} \cdot 2^2 = 112$ roots. The parity constraint leaves
-$2^7 = 128$ half-integer roots. All 240 vectors have squared norm 2.
+$$
+\Phi_{\mathrm{int}} =
+\lbrace \sigma_i e_i + \sigma_j e_j
+\mid 1 \le i < j \le 8,
+\sigma_i,\sigma_j \in \lbrace -1,1 \rbrace \rbrace .
+$$
+
+$$
+\Phi_{\mathrm{half}} =
+\lbrace \tfrac{1}{2}(\varepsilon_1,\ldots,\varepsilon_8)
+\mid \varepsilon_k \in \lbrace -1,1 \rbrace,
+\prod_{k=1}^{8}\varepsilon_k = 1 \rbrace .
+$$
+
+Here $e_i$ are the standard basis vectors. The signs $\sigma_i$ and
+$\sigma_j$ are independent, giving 28 coordinate pairs times 4 sign choices,
+or 112 integer roots. For the half-integer family, the product constraint is
+equivalent to an even number of minus signs and leaves 128 roots. All 240
+vectors have squared norm 2.
 
 No coordinates are loaded from an asset or generated offline. `--check`
 verifies the count, norms, uniqueness, and invariance under the Coxeter map.
