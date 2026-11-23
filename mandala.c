@@ -1,6 +1,10 @@
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE 1
+#endif
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <signal.h>
 #include <stdint.h>
@@ -10,6 +14,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
+#include <sys/signal.h>
+#include <termios.h>
 
 #define E8_DIM 8
 #define E8_ROOT_COUNT 240
@@ -20,7 +27,6 @@
 static const char DENSITY_RAMP[] = " .,:;irsXA253hMHGS#9B&@";
 static volatile sig_atomic_t keep_running = 1;
 static volatile sig_atomic_t resize_pending = 1;
-static int terminal_active = 0;
 
 typedef struct {
     double value[E8_DIM];
@@ -43,9 +49,19 @@ typedef struct {
     int fps;
     double cycle_seconds;
     unsigned long frame_limit;
+    unsigned long seconds_limit;
     int color;
     int rays;
+    int shellsaver;
 } Options;
+
+typedef struct {
+    int alternate_screen;
+    int termios_saved;
+    struct termios saved_termios;
+} TerminalSession;
+
+static TerminalSession terminal_session;
 
 typedef struct {
     int first_axis;
@@ -92,11 +108,47 @@ static void handle_resize(int signal_number) {
 }
 
 static void restore_terminal(void) {
-    if (terminal_active) {
+    if (terminal_session.alternate_screen) {
         fputs("\033[0m\033[?25h\033[?1049l", stdout);
         fflush(stdout);
-        terminal_active = 0;
+        terminal_session.alternate_screen = 0;
     }
+    if (terminal_session.termios_saved) {
+        (void)tcsetattr(STDIN_FILENO, TCSAFLUSH, &terminal_session.saved_termios);
+        terminal_session.termios_saved = 0;
+    }
+}
+
+static int enter_terminal(int shellsaver) {
+    memset(&terminal_session, 0, sizeof(terminal_session));
+
+    if (shellsaver) {
+        if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
+            fputs("mandala: shellsaver mode requires an interactive terminal\n", stderr);
+            return 0;
+        }
+        if (tcgetattr(STDIN_FILENO, &terminal_session.saved_termios) == -1) {
+            perror("mandala: tcgetattr");
+            return 0;
+        }
+        terminal_session.termios_saved = 1;
+
+        struct termios raw = terminal_session.saved_termios;
+        raw.c_lflag &= (tcflag_t)~(ECHO | ICANON);
+        raw.c_iflag &= (tcflag_t)~(ICRNL | IXON);
+        raw.c_cc[VMIN] = 0;
+        raw.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) {
+            perror("mandala: tcsetattr");
+            restore_terminal();
+            return 0;
+        }
+    }
+
+    terminal_session.alternate_screen = 1;
+    fputs("\033[?1049h\033[?25l\033[2J", stdout);
+    fflush(stdout);
+    return 1;
 }
 
 static double dot8(const Vec8 *left, const Vec8 *right) {
@@ -571,6 +623,46 @@ static void sleep_until(double deadline) {
     }
 }
 
+static int wait_until_or_input(double deadline, int watch_input) {
+    if (!watch_input) {
+        sleep_until(deadline);
+        return 0;
+    }
+
+    while (keep_running) {
+        double remaining = deadline - monotonic_seconds();
+        if (remaining <= 0.0) {
+            return 0;
+        }
+
+        fd_set input;
+        FD_ZERO(&input);
+        FD_SET(STDIN_FILENO, &input);
+        struct timeval timeout = {
+            .tv_sec = (time_t)remaining,
+            .tv_usec = (suseconds_t)((remaining - floor(remaining)) * 1000000.0),
+        };
+        int ready = select(STDIN_FILENO + 1, &input, NULL, NULL, &timeout);
+        if (ready > 0 && FD_ISSET(STDIN_FILENO, &input)) {
+            char input_buffer[128];
+            ssize_t bytes_read = read(STDIN_FILENO, input_buffer, sizeof(input_buffer));
+            if (bytes_read >= 0) {
+                return 1;
+            }
+            if (errno != EINTR) {
+                perror("mandala: read");
+                return -1;
+            }
+        } else if (ready == 0) {
+            return 0;
+        } else if (errno != EINTR) {
+            perror("mandala: select");
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static void print_usage(FILE *stream, const char *program) {
     fprintf(stream,
         "Usage: %s [OPTIONS]\n"
@@ -580,6 +672,8 @@ static void print_usage(FILE *stream, const char *program) {
         "  -f, --fps N       frame rate, 1..120 (default: 30)\n"
         "  -c, --cycle SEC   seamless cycle duration, 2..300 (default: 24)\n"
         "      --frames N    stop after N frames (useful for automation)\n"
+        "      --shellsaver  exit on any key and own the terminal lifecycle\n"
+        "      --seconds N   stop shellsaver mode after N seconds\n"
         "      --no-color    disable 24-bit ANSI color\n"
         "      --no-rays     render roots without radial traces\n"
         "      --check       validate E8 roots and Coxeter geometry, then exit\n"
@@ -615,8 +709,10 @@ static int parse_options(int argc, char **argv, Options *options, int *check_onl
         .fps = 30,
         .cycle_seconds = 24.0,
         .frame_limit = 0,
+        .seconds_limit = 0,
         .color = 1,
         .rays = 1,
+        .shellsaver = 0,
     };
     *check_only = 0;
 
@@ -636,6 +732,10 @@ static int parse_options(int argc, char **argv, Options *options, int *check_onl
         }
         if (strcmp(argument, "--check") == 0) {
             *check_only = 1;
+            continue;
+        }
+        if (strcmp(argument, "--shellsaver") == 0) {
+            options->shellsaver = 1;
             continue;
         }
 
@@ -665,8 +765,21 @@ static int parse_options(int argc, char **argv, Options *options, int *check_onl
             options->frame_limit = (unsigned long)value;
             continue;
         }
+        if (strcmp(argument, "--seconds") == 0) {
+            long value;
+            if (++index >= argc || !parse_long(argv[index], 1, LONG_MAX, &value)) {
+                fprintf(stderr, "Invalid duration (expected a positive integer)\n");
+                return 0;
+            }
+            options->seconds_limit = (unsigned long)value;
+            continue;
+        }
 
         fprintf(stderr, "Unknown option: %s\n", argument);
+        return 0;
+    }
+    if (options->seconds_limit > 0 && !options->shellsaver) {
+        fputs("--seconds requires --shellsaver\n", stderr);
         return 0;
     }
     return 1;
@@ -707,6 +820,7 @@ int main(int argc, char **argv) {
     sigaction(SIGINT, &stop_action, NULL);
     sigaction(SIGTERM, &stop_action, NULL);
     sigaction(SIGHUP, &stop_action, NULL);
+    sigaction(SIGQUIT, &stop_action, NULL);
     sigaction(SIGWINCH, &resize_action, NULL);
 
     Renderer renderer = {0};
@@ -721,11 +835,16 @@ int main(int argc, char **argv) {
         fputs("Unable to register terminal cleanup\n", stderr);
         return 1;
     }
-    fputs("\033[?1049h\033[?25l\033[2J", stdout);
-    fflush(stdout);
-    terminal_active = 1;
+    if (!enter_terminal(options.shellsaver)) {
+        return 1;
+    }
 
     while (keep_running && (options.frame_limit == 0 || frame < options.frame_limit)) {
+        double elapsed_now = monotonic_seconds();
+        if (options.shellsaver && options.seconds_limit > 0
+            && elapsed_now - started_at >= (double)options.seconds_limit) {
+            break;
+        }
         if (resize_pending) {
             resize_pending = 0;
             if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &terminal) == -1
@@ -758,7 +877,21 @@ int main(int argc, char **argv) {
         if (next_frame < now - 1.0 / options.fps) {
             next_frame = now;
         }
-        sleep_until(next_frame);
+        double wait_deadline = next_frame;
+        if (options.shellsaver && options.seconds_limit > 0) {
+            double stop_at = started_at + (double)options.seconds_limit;
+            if (stop_at < wait_deadline) {
+                wait_deadline = stop_at;
+            }
+        }
+        int wait_result = wait_until_or_input(wait_deadline, options.shellsaver);
+        if (wait_result < 0) {
+            exit_code = 1;
+            break;
+        }
+        if (wait_result > 0) {
+            break;
+        }
     }
 
     free(renderer.cells);
