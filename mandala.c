@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <sys/signal.h>
 #include <termios.h>
 
 #define E8_DIM 8
