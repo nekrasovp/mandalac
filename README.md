@@ -30,8 +30,20 @@ make
 ```
 
 Press `Ctrl+C` to stop. The alternate screen, cursor, and colors are restored
-on normal exit and on `SIGINT`, `SIGTERM`, or `SIGHUP`. The picture adapts to
-terminal resizing without changing the physical aspect ratio of the mandala.
+on normal exit and on `SIGINT`, `SIGTERM`, `SIGHUP`, or `SIGQUIT`. The picture
+adapts to terminal resizing without changing the physical aspect ratio of the
+mandala.
+
+For host integrations and on-demand terminal screensavers:
+
+```sh
+./mandala --shellsaver
+./mandala --shellsaver --seconds 30
+```
+
+Shellsaver mode exits on any key, owns raw input and terminal restoration, and
+uses the same live 240-root renderer as the default application. It is a visual
+screensaver, not a security lock.
 
 Useful options:
 
@@ -39,6 +51,8 @@ Useful options:
 -f, --fps N       frame rate, 1..120 (default: 30)
 -c, --cycle SEC   seamless cycle duration, 2..300 (default: 24)
     --frames N    stop after N frames
+    --shellsaver  exit on any key and own the terminal lifecycle
+    --seconds N   stop shellsaver mode after N seconds
     --no-color    monochrome ASCII output
     --no-rays     hide the faint radial traces
     --check       validate the E8 geometry and exit
@@ -215,7 +229,16 @@ make check
 
 The check covers all root invariants, Coxeter-plane orthonormality,
 $C^{30}=I$, and the eight disjoint 30-root orbits. GitHub Actions builds and
-checks the program with both GCC and Clang.
+checks the program with both GCC and Clang. The complete portable test suite
+also exercises timeout, keyboard wake, signal cleanup, terminal restoration,
+the resize safety limit, and deterministic release packaging:
+
+```sh
+make test
+make test-omz
+```
+
+CI runs the renderer and PTY lifecycle tests on Linux and macOS x86_64/arm64.
 
 The README animation is optional and requires Python 3 and Pillow:
 
@@ -226,6 +249,28 @@ make preview
 The capture tool runs the real executable in a pseudo-terminal and interprets
 the ANSI stream. The generated GIF is documentation only; it is never used by
 `mandala`.
+
+## Oh My Zsh Shellsaver adapter
+
+[`contrib/oh-my-zsh/mandala.zsh`](contrib/oh-my-zsh/mandala.zsh) is a thin
+launcher, not a Zsh reimplementation of E8. It resolves the canonical binary
+and replaces itself with `mandala --shellsaver`:
+
+```sh
+MANDALAC_BIN=$PWD/mandala zsh contrib/oh-my-zsh/mandala.zsh --seconds 30
+```
+
+![Animated Oh My Zsh mandala preview](assets/omz-mandala.gif)
+
+## Release archives
+
+Tagged releases provide deterministic archives and SHA-256 files for Linux and
+macOS on x86_64 and arm64. To reproduce an archive locally:
+
+```sh
+SOURCE_DATE_EPOCH=$(git show --no-patch --format=%ct HEAD) \
+  make dist VERSION=v0.1.0 PLATFORM=linux-x86_64
+```
 
 ## License
 

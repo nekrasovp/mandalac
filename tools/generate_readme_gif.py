@@ -137,6 +137,7 @@ def render_terminal(
 
 def capture(
     executable: Path,
+    arguments: list[str],
     destination: Path,
     columns: int,
     rows: int,
@@ -157,18 +158,23 @@ def capture(
 
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+    environment = os.environ.copy()
+    if environment.get("TERM") in (None, "", "dumb"):
+        environment["TERM"] = "xterm-256color"
     process = subprocess.Popen(
         [
             str(executable.resolve()),
+            *arguments,
             "--fps",
             "30",
             "--cycle",
             str(cycle_seconds),
         ],
-        stdin=subprocess.DEVNULL,
+        stdin=slave,
         stdout=slave,
         stderr=slave,
         close_fds=True,
+        env=environment,
         start_new_session=True,
     )
     os.close(slave)
@@ -240,10 +246,17 @@ def main() -> None:
     parser.add_argument("--cycle", type=float, default=6.0)
     parser.add_argument("--font", type=Path, default=DEFAULT_FONT)
     parser.add_argument("--font-size", type=int, default=12)
+    parser.add_argument(
+        "--argument",
+        action="append",
+        default=[],
+        help="argument passed to the terminal program; repeat as needed",
+    )
     args = parser.parse_args()
 
     capture(
         args.executable,
+        args.argument,
         args.destination,
         args.columns,
         args.rows,
